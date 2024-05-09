@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 AccelByte Inc
+ * Copyright (c) 2021 AccelByte Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"os"
+	"io/ioutil"
 
 	"github.com/sirupsen/logrus"
 )
@@ -37,7 +37,7 @@ const (
 
 // GetTLSCertFromFile reads file, divides into key and certificates
 func GetTLSCertFromFile(path string) (*tls.Certificate, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := ioutil.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}

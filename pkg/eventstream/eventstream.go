@@ -1,6 +1,18 @@
-// Copyright (c) 2024 AccelByte Inc. All Rights Reserved.
-// This is licensed software from AccelByte Inc, for limitations
-// and restrictions contact your company contract manager.
+/*
+ * Copyright 2024 AccelByte Inc
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 package eventstream
 
@@ -9,10 +21,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	validator "github.com/AccelByte/justice-input-validation-go"
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
-	"github.com/sirupsen/logrus"
 	"time"
+
+	validator "github.com/AccelByte/justice-input-validation-go"
+	"github.com/segmentio/kafka-go"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -29,7 +42,6 @@ const (
 const (
 	separator      = "." // topic prefix separator
 	defaultVersion = 1
-	dlq            = "dlq"
 )
 
 // log level
@@ -77,21 +89,13 @@ type BrokerConfig struct {
 	StrictValidation bool
 	CACertFile       string
 	DialTimeout      time.Duration
+	ReadTimeout      time.Duration // deprecated: use baseWriterConfig.ReadTimeout
+	WriteTimeout     time.Duration // deprecated: use baseWriterConfig.WriteTimeout
+	Balancer         kafka.Balancer
 	SecurityConfig   *SecurityConfig
 
-	// Enable auto commit on every consumer polls when the interval has stepped in.
-	// Enabling it will override CommitBeforeProcessing config. Default: 0 (disabled).
-	AutoCommitInterval time.Duration
-
-	// Enable committing the message offset right after consumer polls and before the message is processed.
-	// Otherwise, the message offset will be committed after it is processed.
-	CommitBeforeProcessing bool
-
-	// BaseConfig is a map to store key-value configuration of a broker.
-	// It will override other configs that have been set using other BrokerConfig options.
-	// Only Kafka broker is supported.
-	// 		List of supported Kafka configuration: https://github.com/confluentinc/librdkafka/blob/master/CONFIGURATION.md
-	BaseConfig map[string]interface{}
+	BaseWriterConfig *kafka.WriterConfig
+	BaseReaderConfig *kafka.ReaderConfig
 }
 
 // SecurityConfig contains security configuration for message broker
@@ -103,7 +107,7 @@ type SecurityConfig struct {
 
 // PublishBuilder defines the structure of message which is sent through message broker
 type PublishBuilder struct {
-	topic            string
+	topic            []string
 	eventName        string
 	clientID         string
 	traceID          string
@@ -135,8 +139,8 @@ func NewPublish() *PublishBuilder {
 }
 
 // Topic set channel / topic name
-func (p *PublishBuilder) Topic(topic string) *PublishBuilder {
-	p.topic = topic
+func (p *PublishBuilder) Topic(topics ...string) *PublishBuilder {
+	p.topic = append(p.topic, topics...)
 	return p
 }
 
@@ -250,9 +254,7 @@ func (p *PublishBuilder) Context(ctx context.Context) *PublishBuilder {
 	return p
 }
 
-// Timeout is an upper bound on the time to report success or failure after a call to send() returns.
-// The value of this config should be greater than or equal to the sum of request.timeout.ms and linger.ms.
-// Default value: 60000 ms
+// Timeout defines publish event timeout
 func (p *PublishBuilder) Timeout(timeout time.Duration) *PublishBuilder {
 	p.timeout = timeout
 	return p
@@ -260,49 +262,38 @@ func (p *PublishBuilder) Timeout(timeout time.Duration) *PublishBuilder {
 
 // SubscribeBuilder defines the structure of message which is sent through message broker
 type SubscribeBuilder struct {
-	topic           string
-	groupID         string
-	groupInstanceID string
-	offset          int64
-	callback        func(ctx context.Context, event *Event, err error) error
-	eventName       string
-	ctx             context.Context
-	callbackRaw     func(ctx context.Context, msgValue []byte, err error) error
-	// flag to send error message to DLQ
-	sendErrorDLQ bool
-	// flag to use async commit consumer
-	asyncCommitMessage bool
+	topic       string
+	groupID     string
+	offset      int64
+	callback    func(ctx context.Context, event *Event, err error) error
+	eventName   string
+	ctx         context.Context
+	callbackRaw func(ctx context.Context, msgValue []byte, err error) error
 }
 
 // NewSubscribe create new SubscribeBuilder instance
 func NewSubscribe() *SubscribeBuilder {
 	return &SubscribeBuilder{
 		ctx:    context.Background(),
-		offset: int64(kafka.OffsetEnd),
+		offset: kafka.LastOffset,
 	}
 }
 
-// Topic sets the topic to subscribe to
+// Topic set topic that will be subscribe
 func (s *SubscribeBuilder) Topic(topic string) *SubscribeBuilder {
 	s.topic = topic
 	return s
 }
 
-// Offset sets the offset of the event to start with
+// Offset set Offset of the event to start
 func (s *SubscribeBuilder) Offset(offset int64) *SubscribeBuilder {
 	s.offset = offset
 	return s
 }
 
-// GroupID set subscriber groupID. A random groupID will be generated by default.
+// GroupID set subscriber groupID or queue group name
 func (s *SubscribeBuilder) GroupID(groupID string) *SubscribeBuilder {
 	s.groupID = groupID
-	return s
-}
-
-// GroupInstanceID set subscriber group instance ID
-func (s *SubscribeBuilder) GroupInstanceID(groupInstanceID string) *SubscribeBuilder {
-	s.groupInstanceID = groupInstanceID
 	return s
 }
 
@@ -335,20 +326,6 @@ func (s *SubscribeBuilder) Context(ctx context.Context) *SubscribeBuilder {
 	return s
 }
 
-// SendErrorDLQ to send error message to DLQ topic.
-// DLQ topic: 'topic' + -dlq
-func (s *SubscribeBuilder) SendErrorDLQ(dlq bool) *SubscribeBuilder {
-	s.sendErrorDLQ = dlq
-	return s
-}
-
-// AsyncCommitMessage to asynchronously commit message offset.
-// This setting will be overridden by AutoCommitInterval on BrokerConfig
-func (s *SubscribeBuilder) AsyncCommitMessage(async bool) *SubscribeBuilder {
-	s.asyncCommitMessage = async
-	return s
-}
-
 // Slug is a string describing a unique subscriber (topic, eventName, groupID)
 func (s *SubscribeBuilder) Slug() string {
 	return fmt.Sprintf("%s%s%s%s%s", s.topic, slugSeparator, s.eventName, slugSeparator, s.groupID)
@@ -373,33 +350,30 @@ type Client interface {
 	PublishSync(publishBuilder *PublishBuilder) error
 	Register(subscribeBuilder *SubscribeBuilder) error
 	PublishAuditLog(auditLogBuilder *AuditLogBuilder) error
-	GetMetadata(topic string, timeout time.Duration) (*Metadata, error)
 }
 
 type AuditLog struct {
-	ID         string `json:"_id" valid:"required"`
-	ActionName string `json:"actionName" valid:"required"`
-	Timestamp  int64  `json:"timestamp" valid:"required"`
-	IP         string `json:"ip,omitempty" valid:"optional"`
-	ActorID    string `json:"actorID" valid:"uuid4WithoutHyphens,required"`
-	ActorType  string `json:"actorType" valid:"required~actorType values: USER CLIENT"`
-	ObjectID   string `json:"objectId,omitempty" valid:"optional"`
-	ObjectType string `json:"objectType,omitempty" valid:"optional"`
-
-	ActionDetails AuditLogPayload `json:"payload" valid:"required"`
+	ID            string          `json:"_id" valid:"required"`
+	Timestamp     int64           `json:"timestamp" valid:"required"`
+	ActionName    string          `json:"actionName" valid:"required"`
+	ActorID       string          `json:"actorId" valid:"uuid4WithoutHyphens,required"`
+	ActorType     string          `json:"actorType" valid:"required~actorType values: USER CLIENT"`
+	ActionDetails AuditLogDetails `json:"actionDetails" valid:"required"`
+	ObjectID      string          `json:"objectId,omitempty" valid:"optional"`
+	ObjectType    string          `json:"objectType,omitempty" valid:"optional"`
+	IP            string          `json:"ip,omitempty" valid:"optional"`
 }
 
 type PublishErrorCallbackFunc func(message []byte, err error)
 
 type AuditLogBuilder struct {
-	actionName string `description:"required"`
-	ip         string `description:"optional"`
-	actorID    string `description:"uuid4WithoutHyphens,required"`
-	actorType  string `description:"required~actorType values: USER CLIENT"`
-	objectID   string `description:"optional"`
-	objectType string `description:"optional"`
-
-	content map[string]interface{} `description:"optional"`
+	actionName string         `description:"required"`
+	actorID    string         `description:"uuid4WithoutHyphens,required"`
+	actorType  string         `description:"required~actorType values: USER CLIENT"`
+	content    map[string]any `description:"optional"`
+	objectID   string         `description:"optional"`
+	objectType string         `description:"optional"`
+	ip         string         `description:"optional"`
 
 	key           string
 	errorCallback PublishErrorCallbackFunc
@@ -416,8 +390,8 @@ func NewAuditLogBuilder() *AuditLogBuilder {
 	}
 }
 
-type AuditLogPayload struct {
-	Content map[string]interface{} `json:"content"`
+type AuditLogDetails struct {
+	Content map[string]any `json:"content"`
 }
 
 func (auditLogBuilder *AuditLogBuilder) ActionName(actionName string) *AuditLogBuilder {
@@ -430,8 +404,8 @@ func (auditLogBuilder *AuditLogBuilder) IP(ip string) *AuditLogBuilder {
 	return auditLogBuilder
 }
 
-func (auditLogBuilder *AuditLogBuilder) Actor(actor string) *AuditLogBuilder {
-	auditLogBuilder.actorID = actor
+func (auditLogBuilder *AuditLogBuilder) ActorID(actorID string) *AuditLogBuilder {
+	auditLogBuilder.actorID = actorID
 	return auditLogBuilder
 }
 
@@ -470,16 +444,17 @@ func (auditLogBuilder *AuditLogBuilder) Key(key string) *AuditLogBuilder {
 	return auditLogBuilder
 }
 
-func (auditLogBuilder *AuditLogBuilder) Build() (*kafka.Message, error) {
+func (auditLogBuilder *AuditLogBuilder) Build() (kafka.Message, error) {
 	auditLog := &AuditLog{
-		ID:         generateID(),
-		Timestamp:  time.Now().UnixMilli(),
-		ActionName: auditLogBuilder.actionName,
-		ActorID:    auditLogBuilder.actorID,
-		ActorType:  auditLogBuilder.actorType,
-		ObjectID:   auditLogBuilder.objectID,
-		ObjectType: auditLogBuilder.objectType,
-		IP:         auditLogBuilder.ip,
+		ID:            generateID(),
+		Timestamp:     time.Now().UnixMilli(),
+		ActionName:    auditLogBuilder.actionName,
+		ActorID:       "",
+		ActorType:     auditLogBuilder.actorType,
+		ActionDetails: AuditLogDetails{},
+		ObjectID:      auditLogBuilder.objectID,
+		ObjectType:    auditLogBuilder.objectType,
+		IP:            auditLogBuilder.ip,
 	}
 
 	var content map[string]interface{}
@@ -489,28 +464,26 @@ func (auditLogBuilder *AuditLogBuilder) Build() (*kafka.Message, error) {
 		content = auditLogBuilder.content
 	}
 
-	auditLog.ActionDetails = AuditLogPayload{
-		Content: content,
-	}
+	auditLog.ActionDetails = AuditLogDetails{Content: content}
 
 	valid, err := validator.ValidateStruct(auditLog)
 	if err != nil {
 		logrus.WithField("action", auditLog.ActionName).
-			Errorf("Unable to validate audit log. Error: %v", err)
-		return &kafka.Message{}, err
+			Errorf("unable to validate audit log. error : %v", err)
+		return kafka.Message{}, err
 	}
 	if !valid {
-		return &kafka.Message{}, errInvalidPubStruct
+		return kafka.Message{}, errInvalidPubStruct
 	}
 
 	auditLogBytes, marshalErr := json.Marshal(auditLog)
 	if marshalErr != nil {
 		logrus.WithField("action", auditLog.ActionName).
-			Errorf("Unable to marshal audit log: %v, error: %v", auditLog, marshalErr)
-		return &kafka.Message{}, marshalErr
+			Errorf("unable to marshal audit log : %v, error: %v", auditLog, marshalErr)
+		return kafka.Message{}, marshalErr
 	}
 
-	return &kafka.Message{
+	return kafka.Message{
 		Key:   []byte(auditLogBuilder.key),
 		Value: auditLogBytes,
 	}, nil

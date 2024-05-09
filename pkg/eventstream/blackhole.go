@@ -16,8 +16,6 @@
 
 package eventstream
 
-import "time"
-
 // BlackholeClient satisfies the publisher for mocking
 type BlackholeClient struct{}
 
@@ -44,9 +42,4 @@ func (client *BlackholeClient) PublishSync(publishBuidler *PublishBuilder) error
 func (client *BlackholeClient) PublishAuditLog(auditLogBuilder *AuditLogBuilder) error {
 	// do nothing
 	return nil
-}
-
-func (client *BlackholeClient) GetMetadata(_ string, _ time.Duration) (*Metadata, error) {
-	// do nothing
-	return nil, nil
 }

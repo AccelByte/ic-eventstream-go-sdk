@@ -18,8 +18,7 @@ clean:
 test:
 	docker-compose -f docker-compose-test.yaml up -d -V
 	sleep 30
-	CGO_ENABLED=1 go test -v ./...
-	docker-compose -f docker-compose-test.yaml down
+	CGO_ENABLED=1 go test -v ./... ; docker-compose -f docker-compose-test.yaml down
 
 coverage:
 	go test -coverprofile=coverage.out ./...

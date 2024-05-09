@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 AccelByte Inc
+ * Copyright (c) 2020 AccelByte Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,10 +18,11 @@ package eventstream
 
 import (
 	"context"
-	"errors"
-	validator "github.com/AccelByte/justice-input-validation-go"
-	"github.com/sirupsen/logrus"
 	"regexp"
+
+	validator "github.com/AccelByte/justice-input-validation-go"
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 const TopicEventPattern = "^[a-zA-Z0-9]+((['_.-][a-zA-Z0-9])?[a-zA-Z0-9]*)*$"
@@ -32,6 +33,7 @@ var (
 	errInvalidEventNameFormat = errors.New("eventname format isn't valid")
 	errInvalidUserID          = errors.New("userID isn't valid")
 	errInvalidClientID        = errors.New("clientID isn't valid")
+	errInvalidSessionID       = errors.New("sessionID isn't valid")
 	errInvalidTraceID         = errors.New("traceID isn't valid")
 	errInvalidCallback        = errors.New("callback should not be nil")
 )
@@ -49,12 +51,14 @@ func init() {
 // validatePublishEvent validate published event
 func validatePublishEvent(publishBuilder *PublishBuilder, strictValidation bool) error {
 
-	if isTopicValid := validateTopicEvent(publishBuilder.topic); !isTopicValid {
-		logrus.
-			WithField("Topic Name", publishBuilder.topic).
-			WithField("Event Name", publishBuilder.eventName).
-			Errorf("unable to validate publisher event. error: invalid topic format")
-		return errInvalidTopicFormat
+	for _, topic := range publishBuilder.topic {
+		if isTopicValid := validateTopicEvent(topic); !isTopicValid {
+			logrus.
+				WithField("Topic Name", topic).
+				WithField("Event Name", publishBuilder.eventName).
+				Errorf("unable to validate publisher event. error: invalid topic format")
+			return errInvalidTopicFormat
+		}
 	}
 
 	if isEventNameValid := validateTopicEvent(publishBuilder.eventName); !isEventNameValid {
@@ -66,8 +70,8 @@ func validatePublishEvent(publishBuilder *PublishBuilder, strictValidation bool)
 	}
 
 	publishEvent := struct {
-		Topic     string `valid:"required"`
-		EventName string `valid:"required"`
+		Topic     []string `valid:"required"`
+		EventName string   `valid:"required"`
 		ClientID  string
 		UserID    string
 		TraceID   string

@@ -43,21 +43,13 @@ func constructGroupID(prefix, groupID string) string {
 	return prefix + separator + groupID
 }
 
-// constructGroupInstanceID construct groupInstanceID or queue group name
-func constructGroupInstanceID(prefix, groupInstanceID string) string {
-	if groupInstanceID == "" {
-		return ""
-	}
-
-	return prefix + separator + groupInstanceID
-}
-
 // generateID returns UUID without dash
 func generateID() string {
 	id := uuid.New()
 	return strings.Replace(id.String(), "-", "", -1)
 }
 
+// marshal marshal event into json []byte
 func marshal(event *Event) ([]byte, error) {
 	bytes, err := json.Marshal(&event)
 	if err != nil {

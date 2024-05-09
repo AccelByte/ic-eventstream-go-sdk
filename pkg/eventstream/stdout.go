@@ -111,8 +111,3 @@ func (client *StdoutClient) PublishAuditLog(auditLogBuilder *AuditLogBuilder) er
 	fmt.Println(string(message.Value))
 	return nil
 }
-
-func (client *StdoutClient) GetMetadata(_ string, _ time.Duration) (*Metadata, error) {
-	// do nothing
-	return nil, nil
-}

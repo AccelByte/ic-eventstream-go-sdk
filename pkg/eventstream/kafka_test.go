@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/segmentio/kafka-go"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -329,7 +329,7 @@ func randomString(length int) string {
 func makePayload(keyLength, messageLength int) map[string]interface{} {
 	ret := make(map[string]interface{})
 	for i := 0; i < keyLength; i++ {
-		ret[uuid.NewString()] = randomString(messageLength)
+		ret[randomString(32)] = randomString(messageLength)
 	}
 	return ret
 }
@@ -344,7 +344,7 @@ func TestKafkaMaxMessageSize(t *testing.T) {
 		Err     error
 	}{
 		{Payload: makePayload(10, 1000), Err: nil},
-		{Payload: makePayload(2000, 1000), Err: ErrMessageTooLarge},
+		{Payload: makePayload(2000, 1000), Err: errMessageTooLarge},
 	}
 
 	for _, testCase := range testCases {
@@ -403,8 +403,8 @@ func TestKafkaMaxMessageSizeModified(t *testing.T) {
 		CACertFile:       "",
 		StrictValidation: true,
 		DialTimeout:      2 * time.Second,
-		BaseConfig: map[string]interface{}{
-			"message.max.bytes": 4096,
+		BaseWriterConfig: &kafka.WriterConfig{
+			BatchBytes: 4096,
 		},
 	}
 
@@ -417,7 +417,7 @@ func TestKafkaMaxMessageSizeModified(t *testing.T) {
 		Err     error
 	}{
 		{Payload: makePayload(1, 1000), Err: nil},
-		{Payload: makePayload(10, 1000), Err: ErrMessageTooLarge},
+		{Payload: makePayload(10, 1000), Err: errMessageTooLarge},
 	}
 
 	for _, testCase := range testCases {
@@ -464,7 +464,6 @@ func TestKafkaMaxMessageSizeModified(t *testing.T) {
 				Version(2).
 				Context(context.Background()).
 				Payload(mockPayload))
-
 		assert.Equal(t, testCase.Err, err)
 	}
 }

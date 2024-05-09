@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2024 AccelByte Inc
+ * Copyright (c) 2020 AccelByte Inc
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,7 +23,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confluentinc/confluent-kafka-go/v2/kafka"
+	"github.com/segmentio/kafka-go"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -69,6 +69,26 @@ func TestMultipleSubscriptionsEventuallyProcessAllEvents(t *testing.T) {
 		Payload:          mockPayload,
 	}
 
+	err := client.PublishSync(
+		NewPublish().
+			Topic(topicName).
+			EventName(mockEvent.EventName).
+			ClientID(mockEvent.ClientID).
+			UserID(mockEvent.UserID).
+			TraceID(mockEvent.TraceID).
+			SpanContext(mockEvent.SpanContext).
+			EventID(mockEvent.EventID).
+			EventType(mockEvent.EventType).
+			EventLevel(mockEvent.EventLevel).
+			ServiceName(mockEvent.ServiceName).
+			ClientIDs(mockEvent.ClientIDs).
+			TargetUserIDs(mockEvent.TargetUserIDs).
+			Privacy(mockEvent.Privacy).
+			AdditionalFields(mockEvent.AdditionalFields).
+			Context(context.Background()).
+			Payload(mockPayload))
+	time.Sleep(time.Second)
+
 	// init event counters
 	processedEvents := make(map[int]int64) // map[event-id]count. used to count all processed events
 
@@ -82,13 +102,13 @@ func TestMultipleSubscriptionsEventuallyProcessAllEvents(t *testing.T) {
 			workerID := i
 			workerEventCounter := 0
 
-			err := client.Register(
+			err = client.Register(
 				NewSubscribe().
 					Topic(topicName).
 					EventName(mockEvent.EventName).
 					GroupID(groupID).
 					Context(ctx).
-					Offset(int64(kafka.OffsetBeginning)).
+					Offset(kafka.FirstOffset).
 					Callback(func(ctx context.Context, event *Event, err error) error {
 						if ctx.Err() != nil {
 							return ctx.Err()
@@ -137,7 +157,7 @@ func TestMultipleSubscriptionsEventuallyProcessAllEvents(t *testing.T) {
 				eventToSend := mockEvent
 				eventToSend.EventID = producer*numberOfEventsPerProducer + j
 
-				err := client.Publish(
+				err = client.Publish(
 					NewPublish().
 						Topic(topicName).
 						EventName(eventToSend.EventName).

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/mitchellh/mapstructure"
+	"github.com/segmentio/kafka-go"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,6 +54,9 @@ func createKafkaClient(t *testing.T) Client {
 		CACertFile:       "",
 		StrictValidation: true,
 		DialTimeout:      2 * time.Second,
+		ReadTimeout:      2 * time.Second,
+		WriteTimeout:     2 * time.Second,
+		BaseWriterConfig: &kafka.WriterConfig{BatchSize: 5},
 	}
 
 	brokerList := []string{"localhost:9092"}
@@ -68,6 +72,8 @@ func createInvalidKafkaClient(t *testing.T) Client {
 		CACertFile:       "",
 		StrictValidation: true,
 		DialTimeout:      time.Second,
+		ReadTimeout:      time.Second,
+		WriteTimeout:     time.Second,
 	}
 
 	brokerList := []string{"invalidbroker:9092"}
@@ -120,6 +126,34 @@ func TestKafkaPubSubSuccess(t *testing.T) {
 		Payload:          mockPayload,
 	}
 
+	for i := 0; i < 20; i++ {
+		err := client.Publish(
+			NewPublish().
+				Topic(topicName).
+				EventName(mockEvent.EventName).
+				ClientID(mockEvent.ClientID).
+				UserID(mockEvent.UserID).
+				TraceID(mockEvent.TraceID).
+				SpanContext(mockEvent.SpanContext).
+				Context(context.Background()).
+				EventID(mockEvent.EventID).
+				EventType(mockEvent.EventType).
+				EventLevel(mockEvent.EventLevel).
+				ServiceName(mockEvent.ServiceName).
+				ClientIDs(mockEvent.ClientIDs).
+				TargetUserIDs(mockEvent.TargetUserIDs).
+				Privacy(mockEvent.Privacy).
+				AdditionalFields(mockEvent.AdditionalFields).
+				Key(mockEvent.Key).
+				Timeout(time.Second).
+				Payload(mockPayload))
+		time.Sleep(time.Millisecond * 5)
+		if err != nil {
+			assert.FailNow(t, errorPublish, err)
+			return
+		}
+	}
+
 	err := client.Register(
 		NewSubscribe().
 			Topic(topicName).
@@ -163,52 +197,101 @@ func TestKafkaPubSubSuccess(t *testing.T) {
 			}))
 	require.NoError(t, err)
 
-	go func() {
-		for i := 0; i < 20; i++ {
-			err = client.Publish(
-				NewPublish().
-					Topic(topicName).
-					EventName(mockEvent.EventName).
-					ClientID(mockEvent.ClientID).
-					UserID(mockEvent.UserID).
-					TraceID(mockEvent.TraceID).
-					SpanContext(mockEvent.SpanContext).
-					Context(context.Background()).
-					EventID(mockEvent.EventID).
-					EventType(mockEvent.EventType).
-					EventLevel(mockEvent.EventLevel).
-					ServiceName(mockEvent.ServiceName).
-					ClientIDs(mockEvent.ClientIDs).
-					TargetUserIDs(mockEvent.TargetUserIDs).
-					Privacy(mockEvent.Privacy).
-					AdditionalFields(mockEvent.AdditionalFields).
-					Key(mockEvent.Key).
-					Timeout(10 * time.Second).
-					Payload(mockPayload))
-			time.Sleep(time.Millisecond * 5)
-			if err != nil {
-				assert.FailNow(t, errorPublish, err)
-				return
-			}
-		}
-	}()
-
-	doneCount := 0
-	for {
-		select {
-		case <-doneChan:
-			doneCount++
-			if doneCount == 20 {
-				return
-			}
-		case <-ctx.Done():
-			assert.FailNow(t, errorTimeout)
-		}
+	select {
+	case <-doneChan:
+		return
+	case <-ctx.Done():
+		assert.FailNow(t, errorTimeout)
 	}
 }
 
+func TestKafkaPubSyncSuccess(t *testing.T) {
+	t.Parallel()
+
+	logrus.SetLevel(logrus.DebugLevel)
+
+	client := createKafkaClient(t)
+
+	topicName := constructTopicTest()
+
+	var mockPayload = make(map[string]interface{})
+	mockPayload[testPayload] = Payload{FriendID: fmt.Sprintf("user-%d", rand.Int63())}
+
+	mockAdditionalFields := map[string]interface{}{
+		"summary": "user:_failed",
+	}
+
+	mockEvent := &Event{
+		EventName:        fmt.Sprintf("testEvent-%d", rand.Int63()),
+		ClientID:         "7d480ce0e8624b02901bd80d9ba9817c",
+		TraceID:          "01c34ec3b07f4bfaa59ba0184a3de14d",
+		SpanContext:      "test-span-id",
+		UserID:           "e95b150043ff4a2c88427a6eb25e5bc8",
+		EventID:          3,
+		EventType:        301,
+		EventLevel:       3,
+		ServiceName:      "test",
+		ClientIDs:        []string{"7d480ce0e8624b02901bd80d9ba9817c"},
+		TargetUserIDs:    []string{"1fe7f425a0e049d29d87ca3d32e45b5a"},
+		Privacy:          true,
+		AdditionalFields: mockAdditionalFields,
+		Version:          defaultVersion,
+		Key:              testKey,
+		Payload:          mockPayload,
+	}
+
+	err := client.PublishSync(
+		NewPublish().
+			Topic(topicName).
+			EventName(mockEvent.EventName).
+			ClientID(mockEvent.ClientID).
+			UserID(mockEvent.UserID).
+			TraceID(mockEvent.TraceID).
+			SpanContext(mockEvent.SpanContext).
+			Context(context.Background()).
+			EventID(mockEvent.EventID).
+			EventType(mockEvent.EventType).
+			EventLevel(mockEvent.EventLevel).
+			ServiceName(mockEvent.ServiceName).
+			ClientIDs(mockEvent.ClientIDs).
+			TargetUserIDs(mockEvent.TargetUserIDs).
+			Privacy(mockEvent.Privacy).
+			AdditionalFields(mockEvent.AdditionalFields).
+			Key(mockEvent.Key).
+			Timeout(time.Second).
+			Payload(mockPayload))
+
+	assert.ErrorIs(t, err, kafka.LeaderNotAvailable)
+
+	time.Sleep(time.Second)
+
+	err = client.PublishSync(
+		NewPublish().
+			Topic(topicName).
+			EventName(mockEvent.EventName).
+			ClientID(mockEvent.ClientID).
+			UserID(mockEvent.UserID).
+			TraceID(mockEvent.TraceID).
+			SpanContext(mockEvent.SpanContext).
+			Context(context.Background()).
+			EventID(mockEvent.EventID).
+			EventType(mockEvent.EventType).
+			EventLevel(mockEvent.EventLevel).
+			ServiceName(mockEvent.ServiceName).
+			ClientIDs(mockEvent.ClientIDs).
+			TargetUserIDs(mockEvent.TargetUserIDs).
+			Privacy(mockEvent.Privacy).
+			AdditionalFields(mockEvent.AdditionalFields).
+			Key(mockEvent.Key).
+			Timeout(time.Second).
+			Payload(mockPayload))
+
+	assert.NoError(t, err)
+
+}
+
 // nolint dupl
-func TestKafkaGroupIDNotSpecifiedSuccess(t *testing.T) {
+func TestKafkaNonConsumerGroupSuccess(t *testing.T) {
 	t.Parallel()
 	ctx, done := context.WithTimeout(context.Background(), time.Duration(timeoutTest)*time.Second)
 	defer done()
@@ -346,6 +429,7 @@ func TestKafkaGroupIDNotSpecifiedSuccess(t *testing.T) {
 			TargetUserIDs(mockEvent.TargetUserIDs).
 			Privacy(mockEvent.Privacy).
 			AdditionalFields(mockEvent.AdditionalFields).
+			//Timeout(time.Second).
 			Key(testKey).
 			Payload(mockPayload))
 	if err != nil {
@@ -438,7 +522,6 @@ func TestKafkaPubFailed(t *testing.T) {
 			Privacy(mockEvent.Privacy).
 			AdditionalFields(mockAdditionalFields).
 			Payload(mockPayload).
-			Timeout(time.Second).
 			ErrorCallback(errorCallback))
 	if err != nil {
 		assert.FailNow(t, errorPublish, err)
@@ -450,6 +533,173 @@ func TestKafkaPubFailed(t *testing.T) {
 		return
 	case <-ctx.Done():
 		assert.FailNow(t, errorTimeout)
+	}
+}
+
+// nolint dupl
+func TestKafkaPubSubMultipleTopicSuccess(t *testing.T) {
+	t.Parallel()
+	ctx, done := context.WithTimeout(context.Background(), time.Duration(timeoutTest)*time.Second)
+	defer done()
+
+	doneChan := make(chan bool, 2)
+
+	client := createKafkaClient(t)
+
+	topicName1, topicName2 := constructTopicTest(), constructTopicTest()
+
+	var mockPayload = make(map[string]interface{})
+	mockPayload[testPayload] = Payload{FriendID: "user456"}
+
+	mockAdditionalFields := map[string]interface{}{
+		"summary": "user:_failed",
+	}
+
+	mockEvent := &Event{
+		EventName:        "testEvent",
+		ClientID:         "fe5bd0e3dc184d2d8ae0e09fcedf0f51",
+		TraceID:          "882da8cddd174d12af25da6310b47bd5",
+		SpanContext:      "test-span-context",
+		UserID:           "48bf8a020b584f31bc605bf65d3300ed",
+		EventID:          3,
+		EventType:        301,
+		EventLevel:       3,
+		ServiceName:      "test",
+		ClientIDs:        []string{"7d480ce0e8624b02901bd80d9ba9817c"},
+		TargetUserIDs:    []string{"1fe7f425a0e049d29d87ca3d32e45b5a"},
+		Privacy:          true,
+		AdditionalFields: mockAdditionalFields,
+		Version:          2,
+		Payload:          mockPayload,
+	}
+
+	err := client.Publish(
+		NewPublish().
+			Topic(topicName1, topicName2).
+			EventName(mockEvent.EventName).
+			ClientID(mockEvent.ClientID).
+			UserID(mockEvent.UserID).
+			TraceID(mockEvent.TraceID).
+			SpanContext(mockEvent.SpanContext).
+			EventID(mockEvent.EventID).
+			EventType(mockEvent.EventType).
+			EventLevel(mockEvent.EventLevel).
+			ServiceName(mockEvent.ServiceName).
+			ClientIDs(mockEvent.ClientIDs).
+			TargetUserIDs(mockEvent.TargetUserIDs).
+			Privacy(mockEvent.Privacy).
+			AdditionalFields(mockEvent.AdditionalFields).
+			Version(2).
+			Context(context.Background()).
+			Payload(mockPayload))
+	if err != nil {
+		assert.Fail(t, errorPublish, err)
+		return
+	}
+
+	time.Sleep(time.Second)
+
+	err = client.Register(
+		NewSubscribe().
+			Topic(topicName1).
+			EventName(mockEvent.EventName).
+			GroupID(generateID()).
+			Offset(0).
+			Context(ctx).
+			Callback(func(ctx context.Context, event *Event, err error) error {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+
+				var eventPayload Payload
+				if err != nil {
+					assert.Fail(t, "error when run callback 1")
+				}
+				if err = mapstructure.Decode(event.Payload[testPayload], &eventPayload); err != nil {
+					assert.Fail(t, "unable to decode payload")
+				}
+				assert.Equal(t, mockEvent.EventName, event.EventName, "event name should be equal")
+				assert.Equal(t, mockEvent.ClientID, event.ClientID, "client ID should be equal")
+				assert.Equal(t, mockEvent.TraceID, event.TraceID, "trace ID should be equal")
+				assert.Equal(t, mockEvent.SpanContext, event.SpanContext, "span context should be equal")
+				assert.Equal(t, mockEvent.UserID, event.UserID, "user ID should be equal")
+				assert.Equal(t, mockEvent.EventID, event.EventID, "EventID should be equal")
+				assert.Equal(t, mockEvent.EventType, event.EventType, "EventType should be equal")
+				assert.Equal(t, mockEvent.EventLevel, event.EventLevel, "EventLevel should be equal")
+				assert.Equal(t, mockEvent.ServiceName, event.ServiceName, "ServiceName should be equal")
+				assert.Equal(t, mockEvent.ClientIDs, event.ClientIDs, "ClientIDs should be equal")
+				assert.Equal(t, mockEvent.TargetUserIDs, event.TargetUserIDs, "TargetUserIDs should be equal")
+				assert.Equal(t, mockEvent.Privacy, event.Privacy, "Privacy should be equal")
+				assert.Equal(t, mockEvent.AdditionalFields, event.AdditionalFields, "AdditionalFields should be equal")
+				assert.Equal(t, mockEvent.Version, event.Version, "version should be equal")
+				if validPayload := reflect.DeepEqual(mockEvent.Payload[testPayload].(Payload), eventPayload); !validPayload {
+					assert.Fail(t, "payload should be equal")
+				}
+				doneChan <- true
+
+				return nil
+			}))
+	if err != nil {
+		assert.Fail(t, errorSubscribe, err)
+		return
+	}
+
+	err = client.Register(
+		NewSubscribe().
+			Topic(topicName2).
+			EventName(mockEvent.EventName).
+			GroupID(generateID()).
+			Offset(0).
+			Context(ctx).
+			Callback(func(ctx context.Context, event *Event, err error) error {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+
+				var eventPayload Payload
+				if err != nil {
+					assert.Fail(t, "error when run callback 2")
+				}
+				if err = mapstructure.Decode(event.Payload[testPayload], &eventPayload); err != nil {
+					assert.Fail(t, "unable to decode payload")
+				}
+				assert.Equal(t, mockEvent.EventName, event.EventName, "event name should be equal")
+				assert.Equal(t, mockEvent.ClientID, event.ClientID, "client ID should be equal")
+				assert.Equal(t, mockEvent.TraceID, event.TraceID, "trace ID should be equal")
+				assert.Equal(t, mockEvent.SpanContext, event.SpanContext, "span context should be equal")
+				assert.Equal(t, mockEvent.UserID, event.UserID, "user ID should be equal")
+				assert.Equal(t, mockEvent.EventID, event.EventID, "EventID should be equal")
+				assert.Equal(t, mockEvent.EventType, event.EventType, "EventType should be equal")
+				assert.Equal(t, mockEvent.EventLevel, event.EventLevel, "EventLevel should be equal")
+				assert.Equal(t, mockEvent.ServiceName, event.ServiceName, "ServiceName should be equal")
+				assert.Equal(t, mockEvent.ClientIDs, event.ClientIDs, "ClientIDs should be equal")
+				assert.Equal(t, mockEvent.TargetUserIDs, event.TargetUserIDs, "TargetUserIDs should be equal")
+				assert.Equal(t, mockEvent.Privacy, event.Privacy, "Privacy should be equal")
+				assert.Equal(t, mockEvent.AdditionalFields, event.AdditionalFields, "AdditionalFields should be equal")
+				assert.Equal(t, mockEvent.Version, event.Version, "version should be equal")
+				if validPayload := reflect.DeepEqual(mockEvent.Payload[testPayload].(Payload), eventPayload); !validPayload {
+					assert.Fail(t, "payload should be equal")
+				}
+				doneChan <- true
+
+				return nil
+			}))
+	if err != nil {
+		assert.Fail(t, errorSubscribe, err)
+		return
+	}
+
+	doneItr := 0
+	for {
+		select {
+		case <-doneChan:
+			doneItr++
+			if doneItr == 2 {
+				return
+			}
+		case <-ctx.Done():
+			assert.FailNow(t, errorTimeout)
+		}
 	}
 }
 
@@ -491,7 +741,34 @@ func TestKafkaPubSubDifferentGroupID(t *testing.T) {
 		Payload:          mockPayload,
 	}
 
-	err := client.Register(
+	err := client.Publish(
+		NewPublish().
+			Topic(topicName).
+			EventName(mockEvent.EventName).
+			ClientID(mockEvent.ClientID).
+			UserID(mockEvent.UserID).
+			TraceID(mockEvent.TraceID).
+			SpanContext(mockEvent.SpanContext).
+			EventID(mockEvent.EventID).
+			EventType(mockEvent.EventType).
+			EventLevel(mockEvent.EventLevel).
+			ServiceName(mockEvent.ServiceName).
+			ClientIDs(mockEvent.ClientIDs).
+			TargetUserIDs(mockEvent.TargetUserIDs).
+			Privacy(mockEvent.Privacy).
+			AdditionalFields(mockEvent.AdditionalFields).
+			Version(2).
+			Context(context.Background()).
+			Timeout(time.Second).
+			Payload(mockPayload))
+	if err != nil {
+		assert.Fail(t, errorPublish, err)
+		return
+	}
+
+	time.Sleep(time.Second)
+
+	err = client.Register(
 		NewSubscribe().
 			Topic(topicName).
 			EventName(mockEvent.EventName).
@@ -578,31 +855,6 @@ func TestKafkaPubSubDifferentGroupID(t *testing.T) {
 			}))
 	require.NoError(t, err)
 
-	err = client.Publish(
-		NewPublish().
-			Topic(topicName).
-			EventName(mockEvent.EventName).
-			ClientID(mockEvent.ClientID).
-			UserID(mockEvent.UserID).
-			TraceID(mockEvent.TraceID).
-			SpanContext(mockEvent.SpanContext).
-			EventID(mockEvent.EventID).
-			EventType(mockEvent.EventType).
-			EventLevel(mockEvent.EventLevel).
-			ServiceName(mockEvent.ServiceName).
-			ClientIDs(mockEvent.ClientIDs).
-			TargetUserIDs(mockEvent.TargetUserIDs).
-			Privacy(mockEvent.Privacy).
-			AdditionalFields(mockEvent.AdditionalFields).
-			Version(2).
-			Context(context.Background()).
-			Timeout(10 * time.Second).
-			Payload(mockPayload))
-	if err != nil {
-		assert.Fail(t, errorPublish, err)
-		return
-	}
-
 	doneItr := 0
 	select {
 	case <-doneChan:
@@ -620,6 +872,8 @@ func TestKafkaPubSubSameGroupID(t *testing.T) {
 	t.Parallel()
 	ctx, done := context.WithTimeout(context.Background(), time.Duration(timeoutTest)*time.Second)
 	defer done()
+
+	logrus.SetLevel(logrus.DebugLevel)
 
 	doneChan := make(chan bool, 2)
 
@@ -653,7 +907,34 @@ func TestKafkaPubSubSameGroupID(t *testing.T) {
 		Payload:          mockPayload,
 	}
 
-	err := client.Register(
+	err := client.Publish(
+		NewPublish().
+			Topic(topicName).
+			EventName(mockEvent.EventName).
+			ClientID(mockEvent.ClientID).
+			UserID(mockEvent.UserID).
+			TraceID(mockEvent.TraceID).
+			SpanContext(mockEvent.SpanContext).
+			EventID(mockEvent.EventID).
+			EventType(mockEvent.EventType).
+			EventLevel(mockEvent.EventLevel).
+			ServiceName(mockEvent.ServiceName).
+			ClientIDs(mockEvent.ClientIDs).
+			TargetUserIDs(mockEvent.TargetUserIDs).
+			Privacy(mockEvent.Privacy).
+			AdditionalFields(mockEvent.AdditionalFields).
+			Version(2).
+			Context(context.Background()).
+			//Timeout(time.Second).
+			Payload(mockPayload))
+	if err != nil {
+		assert.Fail(t, errorPublish, err)
+		return
+	}
+
+	time.Sleep(time.Second)
+
+	err = client.Register(
 		NewSubscribe().
 			Topic(topicName).
 			EventName(mockEvent.EventName).
@@ -743,31 +1024,7 @@ func TestKafkaPubSubSameGroupID(t *testing.T) {
 		return
 	}
 
-	err = client.Publish(
-		NewPublish().
-			Topic(topicName).
-			EventName(mockEvent.EventName).
-			ClientID(mockEvent.ClientID).
-			UserID(mockEvent.UserID).
-			TraceID(mockEvent.TraceID).
-			SpanContext(mockEvent.SpanContext).
-			EventID(mockEvent.EventID).
-			EventType(mockEvent.EventType).
-			EventLevel(mockEvent.EventLevel).
-			ServiceName(mockEvent.ServiceName).
-			ClientIDs(mockEvent.ClientIDs).
-			TargetUserIDs(mockEvent.TargetUserIDs).
-			Privacy(mockEvent.Privacy).
-			AdditionalFields(mockEvent.AdditionalFields).
-			Version(2).
-			Context(context.Background()).
-			Payload(mockPayload))
-	if err != nil {
-		assert.Fail(t, errorPublish, err)
-		return
-	}
-
-	awaitDurationTimer := time.NewTimer(time.Duration(timeoutTest) * time.Second / 2)
+	awaitDurationTimer := time.NewTimer(time.Duration(timeoutTest) * time.Second / 4)
 	defer awaitDurationTimer.Stop()
 
 	doneItr := 0
@@ -828,8 +1085,31 @@ func TestKafkaRegisterMultipleSubscriberCallbackSuccess(t *testing.T) {
 		Payload:          mockPayload,
 	}
 
+	err := client.Publish(
+		NewPublish().
+			Topic(topicName).
+			EventName(mockEvent.EventName).
+			ClientID(mockEvent.ClientID).
+			UserID(mockEvent.UserID).
+			TraceID(mockEvent.TraceID).
+			SpanContext(mockEvent.SpanContext).
+			EventID(mockEvent.EventID).
+			EventType(mockEvent.EventType).
+			EventLevel(mockEvent.EventLevel).
+			ServiceName(mockEvent.ServiceName).
+			ClientIDs(mockEvent.ClientIDs).
+			TargetUserIDs(mockEvent.TargetUserIDs).
+			Privacy(mockEvent.Privacy).
+			AdditionalFields(mockEvent.AdditionalFields).
+			Context(context.Background()).
+			Timeout(time.Second).
+			Payload(mockPayload))
+	require.NoError(t, err)
+
+	time.Sleep(time.Second)
+
 	groupID := generateID()
-	err := client.Register(
+	err = client.Register(
 		NewSubscribe().
 			Topic(topicName).
 			EventName(mockEvent.EventName).
@@ -874,27 +1154,6 @@ func TestKafkaRegisterMultipleSubscriberCallbackSuccess(t *testing.T) {
 			}))
 	require.NoError(t, err)
 
-	err = client.Publish(
-		NewPublish().
-			Topic(topicName).
-			EventName(mockEvent.EventName).
-			ClientID(mockEvent.ClientID).
-			UserID(mockEvent.UserID).
-			TraceID(mockEvent.TraceID).
-			SpanContext(mockEvent.SpanContext).
-			EventID(mockEvent.EventID).
-			EventType(mockEvent.EventType).
-			EventLevel(mockEvent.EventLevel).
-			ServiceName(mockEvent.ServiceName).
-			ClientIDs(mockEvent.ClientIDs).
-			TargetUserIDs(mockEvent.TargetUserIDs).
-			Privacy(mockEvent.Privacy).
-			AdditionalFields(mockEvent.AdditionalFields).
-			Context(context.Background()).
-			Timeout(10 * time.Second).
-			Payload(mockPayload))
-	require.NoError(t, err)
-
 	for {
 		select {
 		case <-doneChan:
@@ -929,7 +1188,24 @@ func TestKafkaUnregisterTopicSuccess(t *testing.T) {
 		Payload:   mockPayload,
 	}
 
-	err := client.Register(
+	err := client.Publish(
+		NewPublish().
+			Topic(topicName).
+			EventName(mockEvent.EventName).
+			ClientID(mockEvent.ClientID).
+			UserID(mockEvent.UserID).
+			TraceID(mockEvent.TraceID).
+			Context(context.Background()).
+			Timeout(time.Second).
+			Payload(mockPayload))
+	if err != nil {
+		assert.FailNow(t, errorPublish, err)
+		return
+	}
+
+	time.Sleep(time.Second)
+
+	err = client.Register(
 		NewSubscribe().
 			Topic(topicName).
 			EventName(mockEvent.EventName).
@@ -982,21 +1258,6 @@ func TestKafkaUnregisterTopicSuccess(t *testing.T) {
 	// unregister subscription
 	subscribeCancel()
 
-	err = client.Publish(
-		NewPublish().
-			Topic(topicName).
-			EventName(mockEvent.EventName).
-			ClientID(mockEvent.ClientID).
-			UserID(mockEvent.UserID).
-			TraceID(mockEvent.TraceID).
-			Context(context.Background()).
-			Timeout(10 * time.Second).
-			Payload(mockPayload))
-	if err != nil {
-		assert.FailNow(t, errorPublish, err)
-		return
-	}
-
 	completions := 0
 
 	for {
@@ -1010,21 +1271,6 @@ func TestKafkaUnregisterTopicSuccess(t *testing.T) {
 			assert.FailNow(t, errorTimeout)
 		}
 	}
-}
-
-func TestKafkaGetMetadata(t *testing.T) {
-	t.Parallel()
-	ctx, done := context.WithTimeout(context.Background(), time.Duration(timeoutTest)*time.Second)
-	defer done()
-
-	logrus.SetLevel(logrus.DebugLevel)
-
-	client := createKafkaClient(t)
-
-	deadline, _ := ctx.Deadline()
-	metadata, err := client.GetMetadata("", time.Until(deadline))
-	require.NoError(t, err)
-	assert.NotEmpty(t, metadata.Brokers[0].ID)
 }
 
 func callerFuncName() string {
