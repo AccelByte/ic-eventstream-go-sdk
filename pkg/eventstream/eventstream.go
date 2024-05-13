@@ -446,15 +446,17 @@ func (auditLogBuilder *AuditLogBuilder) Key(key string) *AuditLogBuilder {
 
 func (auditLogBuilder *AuditLogBuilder) Build() (kafka.Message, error) {
 	auditLog := &AuditLog{
-		ID:            generateID(),
-		Timestamp:     time.Now().UnixMilli(),
-		ActionName:    auditLogBuilder.actionName,
-		ActorID:       "",
-		ActorType:     auditLogBuilder.actorType,
-		ActionDetails: AuditLogDetails{},
-		ObjectID:      auditLogBuilder.objectID,
-		ObjectType:    auditLogBuilder.objectType,
-		IP:            auditLogBuilder.ip,
+		ID:         generateID(),
+		Timestamp:  time.Now().UnixMilli(),
+		ActionName: auditLogBuilder.actionName,
+		ActorID:    auditLogBuilder.actorID,
+		ActorType:  auditLogBuilder.actorType,
+		ActionDetails: AuditLogDetails{
+			Content: auditLogBuilder.content,
+		},
+		ObjectID:   auditLogBuilder.objectID,
+		ObjectType: auditLogBuilder.objectType,
+		IP:         auditLogBuilder.ip,
 	}
 
 	var content map[string]interface{}
