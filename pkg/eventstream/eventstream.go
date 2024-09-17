@@ -28,13 +28,16 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type ActorType string
+
 const (
 	eventStreamNull   = "none"
 	eventStreamStdout = "stdout"
 	eventStreamKafka  = "kafka"
 
-	actorTypeUser   = "USER"
-	actorTypeClient = "CLIENT"
+	ActorTypeUser    ActorType = "USER"
+	ActorTypeClient  ActorType = "CLIENT"
+	ActorTypeWebhook ActorType = "WEBHOOK"
 
 	slugSeparator = "$"
 )
@@ -357,7 +360,7 @@ type AuditLog struct {
 	Timestamp     int64           `json:"timestamp" valid:"required"`
 	ActionName    string          `json:"actionName" valid:"required"`
 	ActorID       string          `json:"actorId" valid:"uuid4WithoutHyphens,required"`
-	ActorType     string          `json:"actorType" valid:"required~actorType values: USER CLIENT"`
+	ActorType     ActorType       `json:"actorType" valid:"required~actorType values: USER CLIENT WEBHOOK"`
 	ActionDetails AuditLogDetails `json:"actionDetails" valid:"required"`
 	ObjectID      string          `json:"objectId,omitempty" valid:"optional"`
 	ObjectType    string          `json:"objectType,omitempty" valid:"optional"`
@@ -369,7 +372,7 @@ type PublishErrorCallbackFunc func(message []byte, err error)
 type AuditLogBuilder struct {
 	actionName string         `description:"required"`
 	actorID    string         `description:"uuid4WithoutHyphens,required"`
-	actorType  string         `description:"required~actorType values: USER CLIENT"`
+	actorType  ActorType      `description:"required~actorType values: USER CLIENT WEBHOOK"`
 	content    map[string]any `description:"optional"`
 	objectID   string         `description:"optional"`
 	objectType string         `description:"optional"`
@@ -409,13 +412,19 @@ func (auditLogBuilder *AuditLogBuilder) ActorID(actorID string) *AuditLogBuilder
 	return auditLogBuilder
 }
 
+// IsActorTypeUser sets the AuditLogBuilder's actor type to either USER or CLIENT depending on the boolean input
+//
+// Deprecated: Use ActorType directly
 func (auditLogBuilder *AuditLogBuilder) IsActorTypeUser(isActorTypeUser bool) *AuditLogBuilder {
 	if isActorTypeUser {
-		auditLogBuilder.actorType = actorTypeUser
-	} else {
-		auditLogBuilder.actorType = actorTypeClient
+		return auditLogBuilder.ActorType(ActorTypeUser)
 	}
 
+	return auditLogBuilder.ActorType(ActorTypeClient)
+}
+
+func (auditLogBuilder *AuditLogBuilder) ActorType(actorType ActorType) *AuditLogBuilder {
+	auditLogBuilder.actorType = actorType
 	return auditLogBuilder
 }
 
